@@ -8,8 +8,11 @@ static const char *const TAG = "nfc.ndef_message";
 
 NdefMessage::NdefMessage(std::vector<uint8_t> &data) {
   ESP_LOGV(TAG, "Building NdefMessage with %zu bytes", data.size());
-  uint8_t index = 0;
-  while (index <= data.size()) {
+  // size_t, not uint8_t: tag data can exceed 255 bytes. Every length read from
+  // the tag is checked against the remaining buffer before it is used.
+  const size_t size = data.size();
+  size_t index = 0;
+  while (index < size) {
     uint8_t tnf_byte = data[index++];
     bool me = tnf_byte & 0x40;      // Message End bit (is set if this is the last record of the message)
     bool sr = tnf_byte & 0x10;      // Short record bit (is set if payload size is less or equal to 255 bytes)
@@ -17,6 +20,12 @@ NdefMessage::NdefMessage(std::vector<uint8_t> &data) {
     uint8_t tnf = tnf_byte & 0x07;  // Type Name Format
 
     ESP_LOGVV(TAG, "me=%s, sr=%s, il=%s, tnf=%d", YESNO(me), YESNO(sr), YESNO(il), tnf);
+
+    const size_t header_len = 1 + (sr ? 1 : 4) + (il ? 1 : 0);
+    if (size - index < header_len) {
+      ESP_LOGE(TAG, "Corrupt record encountered; NdefMessage constructor aborting");
+      break;
+    }
 
     uint8_t type_length = data[index++];
     uint32_t payload_length = 0;
@@ -35,6 +44,13 @@ NdefMessage::NdefMessage(std::vector<uint8_t> &data) {
 
     ESP_LOGVV(TAG, "Lengths: type=%d, payload=%" PRIu32 ", id=%d", type_length, payload_length, id_length);
 
+    const size_t remaining = size - index;
+    if (remaining < static_cast<size_t>(type_length) + id_length ||
+        remaining - type_length - id_length < payload_length) {
+      ESP_LOGE(TAG, "Corrupt record encountered; NdefMessage constructor aborting");
+      break;
+    }
+
     std::string type_str(data.begin() + index, data.begin() + index + type_length);
 
     index += type_length;
@@ -43,11 +59,6 @@ NdefMessage::NdefMessage(std::vector<uint8_t> &data) {
     if (il) {
       id_str = std::string(data.begin() + index, data.begin() + index + id_length);
       index += id_length;
-    }
-
-    if ((data.begin() + index > data.end()) || (data.begin() + index + payload_length > data.end())) {
-      ESP_LOGE(TAG, "Corrupt record encountered; NdefMessage constructor aborting");
-      break;
     }
 
     std::vector<uint8_t> payload_data(data.begin() + index, data.begin() + index + payload_length);
